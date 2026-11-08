@@ -1,0 +1,11 @@
+# Runtime state (sign-in, conversations) and the downloaded runtime, about
+# 1 GB per version.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agy-gateway-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi

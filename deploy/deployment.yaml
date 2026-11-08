@@ -1,0 +1,65 @@
+# One replica per account: sessions live in the process and two instances
+# must not share /data. Recreate stops the old pod before the new one mounts
+# the volume.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agy-gateway
+  labels:
+    app.kubernetes.io/name: agy-gateway
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agy-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agy-gateway
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        fsGroup: 10001
+      # The gateway waits up to 20 s for open requests, then stops the runtime.
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: agy-gateway
+          image: ghcr.io/sujoshua/agy-gateway
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: agy-gateway
+            - secretRef:
+                name: agy-gateway
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          # /healthz answers while the runtime downloads and starts.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          # /readyz answers 503 until the runtime is signed in and has models;
+          # sign in at http://<service>:8080/login.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: agy-gateway-data
