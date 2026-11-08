@@ -1,0 +1,139 @@
+# golangci-lint v2 configuration. The pinned binary is installed by
+# `make bootstrap`; run checks through `make lint` / `make check`.
+version: "2"
+
+run:
+  go: "1.27"
+  timeout: 5m
+  tests: true
+  build-tags:
+    - integration
+
+linters:
+  default: none
+  enable:
+    # Correctness.
+    - govet
+    - staticcheck
+    - errcheck
+    - errorlint
+    - ineffassign
+    - unused
+    - nilerr
+    - durationcheck
+    - wastedassign
+    - fatcontext
+    # Resources and context propagation.
+    - bodyclose
+    - noctx
+    # Security.
+    - gosec
+    # Style and maintainability.
+    - gocritic
+    - revive
+    - misspell
+    - nolintlint
+    - unconvert
+    - usestdlibvars
+    - sloglint
+    - errname
+    - modernize
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        # Struct field ordering for memory layout is noise for this codebase.
+        - fieldalignment
+        # Shadowing `err` is idiomatic Go and flagged too often to be useful.
+        - shadow
+    errcheck:
+      check-type-assertions: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        # Copying request structs by value is deliberate and cheap enough.
+        - hugeParam
+        - rangeValCopy
+        # nolintlint already enforces nolint explanations.
+        - whyNoLint
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: increment-decrement
+        - name: var-naming
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+        - name: defer
+        - name: unused-parameter
+        - name: datarace
+        - name: waitgroup-by-value
+        - name: atomic
+        - name: unconditional-recursion
+        - name: identical-branches
+        - name: use-any
+    gosec:
+      excludes:
+        # Unchecked errors are covered by errcheck with better precision.
+        - G104
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+    misspell:
+      locale: US
+    sloglint:
+      no-mixed-args: true
+      kv-only: false
+      attr-only: false
+      key-naming-case: snake
+
+  exclusions:
+    generated: strict
+    rules:
+      # Tests legitimately use fixed temp paths, loopback HTTP servers, and
+      # helper processes; security findings there are not production risk.
+      - path: _test\.go
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+      rewrite-rules:
+        - pattern: "interface{}"
+          replacement: "any"
+    gofumpt:
+      module-path: github.com/sujoshua/agy-gateway
+      extra:
+        group-params: true
+        clothe-returns: true
+    goimports:
+      local-prefixes:
+        - github.com/sujoshua/agy-gateway
+  exclusions:
+    generated: strict

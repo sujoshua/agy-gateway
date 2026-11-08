@@ -1,0 +1,6 @@
+/bin/
+/coverage.out
+/.state/
+*.test
+/runtime/
+/dist/

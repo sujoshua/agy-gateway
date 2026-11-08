@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# Release archives for agy-gateway. The container image is built by
+# .github/workflows/docker.yml. Windows is not supported: the runtime
+# supervisor relies on Unix process groups.
+version: 2
+
+project_name: agy-gateway
+
+builds:
+  - main: ./cmd/agy-gateway
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - README.zh-CN.md
+      - .env.example
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  footer: |
+    Container image: `ghcr.io/sujoshua/agy-gateway:{{ .Version }}` (linux/amd64, linux/arm64).
+    The Antigravity runtime is not included; see the README.
