@@ -30,6 +30,10 @@ var (
 // loginTimeout bounds how long a started sign-in waits for its callback.
 const loginTimeout = 10 * time.Minute
 
+// callbackGrace is how long FinishLogin waits for the sign-in to finish when
+// delivering the callback failed.
+const callbackGrace = 5 * time.Second
+
 // pendingLogin is an authenticate request waiting for the browser redirect.
 type pendingLogin struct {
 	conn     *sdk.ClientSideConnection
@@ -110,7 +114,18 @@ func (r *Runtime) FinishLogin(ctx context.Context, callback string) (string, err
 		return "", ErrNoLogin
 	}
 	if err := deliverCallback(ctx, callback); err != nil {
-		return "", err
+		if errors.Is(err, ErrBadCallback) {
+			return "", err
+		}
+		// The listener may close as soon as it has the code, before its
+		// reply is read; the sign-in then finishes all the same.
+		select {
+		case <-p.finished:
+		case <-time.After(callbackGrace):
+			return "", err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
 	select {
 	case <-p.finished:
