@@ -151,8 +151,10 @@ is `mcpServers` in `session/new`.
   `agy_acp_server.par` and `localharness_external` sit side by side. Google
   publishes it as a zip, for example
   `https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-x86_64.zip`.
-  See [docs/runtime-notes.md](docs/runtime-notes.md) for what the gateway
-  relies on.
+  On Linux the gateway can fetch it for you instead; see
+  [Automatic runtime download](#automatic-runtime-download). See
+  [docs/runtime-notes.md](docs/runtime-notes.md) for what the gateway relies
+  on.
 - An Antigravity account.
 
 ### Install
@@ -174,21 +176,47 @@ Pick one:
   The binary is written to `bin/agy-gateway`. The examples below use this
   path.
 
-### Sign in
-
-Sign the runtime in once. This is interactive: open the printed URL, sign in,
-then paste the `http://127.0.0.1:…` address the browser was redirected to.
-If the runtime is already signed in, this does nothing.
-
-```bash
-AGY_GW_RUNTIME_CMD=/opt/agy/agy_acp_server.par ./bin/agy-gateway login
-```
-
 ### Run
 
 ```bash
 AGY_GW_RUNTIME_CMD=/opt/agy/agy_acp_server.par AGY_GW_API_KEYS=change-me ./bin/agy-gateway serve
 ```
+
+### Sign in
+
+The runtime needs to be signed in once. The gateway starts without it and
+`/readyz` answers 503 until it is. Either way below drives the runtime's own
+Google sign-in; the gateway passes the redirect along and never reads the
+credentials, which stay in the runtime's state directory.
+
+**In the browser.** Open `http://<host>:8080/login`, enter an API key, and
+click **Get sign-in link**. Sign in to Google in the new tab. The browser
+then fails to load an `http://127.0.0.1:…` address. Copy that address from
+the address bar, paste it into the page, and click **Finish sign-in**. The
+runtime becomes ready without a restart. The page uses two endpoints, which
+also work from scripts:
+
+| Endpoint | Body | Answer |
+|---|---|---|
+| `POST /login/start` | none | `{"auth_url": "https://accounts.google.com/..."}`; 409 `already_signed_in` if nothing needs doing. |
+| `POST /login/finish` | `{"callback_url": "http://127.0.0.1:…"}` | `{"signed_in": true, "tier": "..."}` |
+
+Both need `Authorization: Bearer <key>` when `AGY_GW_API_KEYS` is set. The
+gateway only forwards a `127.0.0.1` or `localhost` address, and only to the
+runtime's own listener. A started sign-in waits up to 10 minutes.
+
+**On the command line.** Before the first `serve`, or with the gateway
+stopped:
+
+```bash
+AGY_GW_RUNTIME_CMD=/opt/agy/agy_acp_server.par ./bin/agy-gateway login
+```
+
+Open the printed URL, sign in, then paste the `http://127.0.0.1:…` address
+the browser was redirected to. If the runtime is already signed in, this does
+nothing.
+
+Then:
 
 ```bash
 curl -s localhost:8080/v1/chat/completions -H 'Authorization: Bearer change-me' -H 'Content-Type: application/json' -d '{"model":"gemini-3.8-flash-low","messages":[{"role":"user","content":"hi"}]}'
@@ -197,6 +225,27 @@ curl -s localhost:8080/v1/chat/completions -H 'Authorization: Bearer change-me' 
 The runtime keeps its state (sign-in and conversations) in
 `$AGY_GW_RUNTIME_HOME/.gemini/antigravity-acp`. `AGY_GW_RUNTIME_HOME`
 defaults to `$HOME`.
+
+### Automatic runtime download
+
+With `AGY_GW_RUNTIME_DOWNLOAD=true`, and when `AGY_GW_RUNTIME_CMD` is not
+found, the gateway downloads the official Linux archive (amd64 or arm64) from
+`dl.google.com` on first start. It checks the archive against a SHA-256 pinned
+in the gateway, unpacks only `agy_acp_server.par` and `localharness_external`
+into `$AGY_GW_RUNTIME_HOME/.cache/agy-gateway/runtime/<version>`, and uses
+that copy from then on. The download is about 320 MB and the unpacked runtime
+about 1 GB. The runtime is not modified. `/healthz` answers while it
+downloads.
+
+`AGY_GW_RUNTIME_VERSION` picks the version (default `1.4.5`). A version
+without a pinned checksum also needs `AGY_GW_RUNTIME_SHA256`. The download is
+off by default for the binary and on in the container image.
+
+To upgrade, set the new version and restart. Once it is in place, the
+gateway removes the other versions it downloaded, along with downloads that
+were interrupted more than an hour ago. Set `AGY_GW_RUNTIME_KEEP_OLD=true` to
+keep old versions for a quick rollback; switching back to a kept version
+needs no download. The gateway does not look for new versions by itself.
 
 ## Docker
 
@@ -208,17 +257,19 @@ Registry:
 | `latest`, `X.Y.Z`, `X.Y` | Release tags. |
 | `edge` | The latest commit on `main`. |
 
-The runtime is not redistributed here, so the image does not include it.
-Mount the runtime directory read-only at `/opt/agy`, and use a volume at
-`/data` for the runtime's state.
+The runtime is not redistributed here, so the image does not include it. By
+default the container downloads it from Google on first start (see
+[Automatic runtime download](#automatic-runtime-download)) and keeps it in
+the `/data` volume with the runtime's state.
 
 ```bash
-docker run -it --rm -v /path/to/agy-runtime:/opt/agy:ro -v agy-data:/data ghcr.io/sujoshua/agy-gateway:latest login
+docker run -d --name agy-gw -p 8080:8080 -v agy-data:/data -e AGY_GW_API_KEYS=change-me -e AGY_GW_IGNORE_UNSUPPORTED_PARAMS=true ghcr.io/sujoshua/agy-gateway:latest
 ```
 
-```bash
-docker run -d --name agy-gw -p 8080:8080 -v /path/to/agy-runtime:/opt/agy:ro -v agy-data:/data -e AGY_GW_API_KEYS=change-me -e AGY_GW_IGNORE_UNSUPPORTED_PARAMS=true ghcr.io/sujoshua/agy-gateway:latest
-```
+Then open `http://localhost:8080/login` to sign in. To use a runtime you
+already have, mount its directory read-only at `/opt/agy`
+(`-v /path/to/agy-runtime:/opt/agy:ro`); it takes precedence over the
+download.
 
 To build the image yourself:
 
@@ -235,8 +286,9 @@ Image details:
 - The image is based on `debian:bookworm-slim`, because the runtime needs
   glibc and CA certificates.
 - It runs as uid 10001, under `tini`. Arbitrary uids work too.
-- The first start in a new container takes tens of seconds while the `.par`
-  unpacks.
+- The first start in a new container takes a few minutes for the download,
+  then tens of seconds while the `.par` unpacks. Later starts skip the
+  download.
 
 ## Running in production
 
@@ -265,6 +317,10 @@ them all with their defaults.
 | `AGY_GW_RUNTIME_CMD` | `agy_acp_server.par` | Runtime binary. |
 | `AGY_GW_RUNTIME_ARGS` | `--uid=` | Runtime arguments. |
 | `AGY_GW_RUNTIME_HOME` | `$HOME` | HOME for the runtime, which holds its sign-in state. |
+| `AGY_GW_RUNTIME_DOWNLOAD` | `false` (`true` in the image) | Download the official runtime when `AGY_GW_RUNTIME_CMD` is not found. |
+| `AGY_GW_RUNTIME_VERSION` | `1.4.5` | Runtime version to download. |
+| `AGY_GW_RUNTIME_SHA256` | pinned | Archive checksum, for a version without a pinned one. |
+| `AGY_GW_RUNTIME_KEEP_OLD` | `false` | Keep other downloaded versions instead of removing them. |
 | `AGY_GW_WORKDIR` | `/tmp/agy-gateway` | Parent of the empty per-session working directories. |
 | `AGY_GW_BRIDGE_LISTEN` | `127.0.0.1:0` | Loopback MCP bridge. |
 | `AGY_GW_MCP_SERVER_NAME` | `client` | The model sees tools as `<name>_<tool>`. |
@@ -327,7 +383,7 @@ Errors use the OpenAI shape `{"error":{"message","type","code"}}`.
 | 400 | Invalid or unsupported request; duplicate tool result. |
 | 401 | Missing or wrong API key. |
 | 404 | Unknown model or route. |
-| 409 | The conversation is busy with another request. |
+| 409 | The conversation is busy with another request; on `/login/*`, already signed in or no sign-in started. |
 | 429 | Runtime quota exhausted, or every session slot is busy. |
 | 502 | The runtime returned an error. |
 | 503 | The runtime is not ready, for example while starting, restarting, or signed out. |

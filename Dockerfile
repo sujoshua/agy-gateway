@@ -1,10 +1,13 @@
 # syntax=docker/dockerfile:1
 #
 # The official runtime is not redistributable from this repository, so the
-# default image does not contain it: mount the unpacked runtime directory
-# (agy_acp_server.par and localharness_external, which the runtime finds next
-# to itself) read-only at /opt/agy. To bake it in for a private registry, put
-# both files in runtime/ and build with --target bundled.
+# default image does not contain it. On first start the gateway downloads the
+# official archive from Google, checks its pinned SHA-256 and unpacks it under
+# /data/.cache/agy-gateway/runtime (about 1 GB). To use a runtime of your own
+# instead, mount the unpacked directory (agy_acp_server.par and
+# localharness_external, which the runtime finds next to itself) read-only at
+# /opt/agy; it takes precedence. To bake it in for a private registry, put both
+# files in runtime/ and build with --target bundled.
 
 # The build stage runs on the build host and cross-compiles, so multi-arch
 # builds do not compile Go under emulation.
@@ -34,6 +37,7 @@ COPY --from=build /out/agy-gateway /usr/local/bin/agy-gateway
 # /data/.gemini/antigravity-acp; mount a volume at /data to keep it.
 ENV AGY_GW_LISTEN=:8080 \
     AGY_GW_RUNTIME_CMD=/opt/agy/agy_acp_server.par \
+    AGY_GW_RUNTIME_DOWNLOAD=true \
     AGY_GW_RUNTIME_HOME=/data \
     AGY_GW_WORKDIR=/tmp/agy-gateway
 USER agy

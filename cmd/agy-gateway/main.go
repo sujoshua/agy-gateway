@@ -112,22 +112,25 @@ func login(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
 		return err
 	}
+	cmd, err := app.RuntimeCmd(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
 	opt := acp.Options{
 		Start: acp.ExecStarter(acp.ExecOptions{
-			Cmd: cfg.RuntimeCmd, Args: cfg.RuntimeArgs, Home: cfg.RuntimeHome, Dir: cfg.WorkDir, Env: harnessEnv(cfg),
-			// The runtime prints the authorize URL on stderr.
-			Stderr: os.Stderr,
+			Cmd: cmd, Args: cfg.RuntimeArgs, Home: cfg.RuntimeHome, Dir: cfg.WorkDir, Env: harnessEnv(cfg),
+			Logger: log.With(slog.String("component", "runtime")),
 		}),
 		WorkDir:       cfg.WorkDir,
 		MCPServerName: cfg.MCPServerName,
 		Version:       version,
 		Logger:        log,
 	}
-	tier, err := acp.Login(ctx, opt, func(ctx context.Context) (string, error) {
-		fmt.Fprintln(os.Stderr, "\nOpen the URL above, sign in, then paste the http://127.0.0.1:... address your browser was redirected to:")
+	tier, err := acp.Login(ctx, opt, func(ctx context.Context, authURL string) (string, error) {
+		fmt.Fprintf(os.Stderr, "Open this URL and sign in:\n\n%s\n\nThe browser then fails to load an http://127.0.0.1:... address. Paste that address here:\n", authURL)
 		return readLine(ctx, os.Stdin)
 	})
-	if acp.IsAlreadySignedIn(err) {
+	if errors.Is(err, acp.ErrSignedIn) {
 		fmt.Fprintf(os.Stderr, "The runtime is already signed in (tier %q); nothing changed.\n", tier)
 		return nil
 	}

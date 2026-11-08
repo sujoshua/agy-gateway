@@ -10,7 +10,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	sdk "github.com/coder/acp-go-sdk"
@@ -19,6 +22,7 @@ import (
 	"github.com/sujoshua/agy-gateway/internal/bridge"
 	"github.com/sujoshua/agy-gateway/internal/config"
 	"github.com/sujoshua/agy-gateway/internal/harness"
+	"github.com/sujoshua/agy-gateway/internal/install"
 	"github.com/sujoshua/agy-gateway/internal/server"
 	"github.com/sujoshua/agy-gateway/internal/session"
 )
@@ -32,9 +36,9 @@ type App struct {
 	cfg *config.Config
 	log *slog.Logger
 	srv *server.Server
-	// Harness says which localharness the runtime uses: "official",
+	// harness says which localharness the runtime uses: "official",
 	// "custom", "patched", or "patch failed" (the official one is used).
-	Harness string
+	harness atomic.Value
 
 	bridgeLn  net.Listener
 	bridgeURL string
@@ -50,16 +54,10 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger, version stri
 	if err != nil {
 		return nil, fmt.Errorf("bridge listener: %w", err)
 	}
-	a := &App{cfg: cfg, log: log, bridgeLn: ln, bridgeURL: "http://" + ln.Addr().String(), Harness: "official"}
+	a := &App{cfg: cfg, log: log, bridgeLn: ln, bridgeURL: "http://" + ln.Addr().String()}
+	a.harness.Store("official")
 	if start == nil {
-		var env []string
-		if path := a.prepareHarness(ctx); path != "" {
-			env = append(env, harness.EnvVar+"="+path)
-		}
-		start = acp.ExecStarter(acp.ExecOptions{
-			Cmd: cfg.RuntimeCmd, Args: cfg.RuntimeArgs, Home: cfg.RuntimeHome, Dir: cfg.WorkDir, Env: env,
-			Logger: log.With(slog.String("component", "runtime")),
-		})
+		start = a.starter()
 	}
 	a.Bridge = bridge.New(bridge.Options{
 		ResultTimeout: cfg.ToolResultTimeout,
@@ -92,34 +90,87 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger, version stri
 		RequestTimeout:    cfg.RequestTimeout,
 		IgnoreUnsupported: cfg.IgnoreUnsupported,
 		EmitReasoning:     cfg.EmitReasoning,
-		Harness:           a.Harness,
+		Harness:           a.harnessStatus,
 		Logger:            log.With(slog.String("component", "http")),
 	}, a.Runtime, a.Sessions)
 	return a, nil
 }
 
-// prepareHarness returns the harness path to hand to the runtime, or ""
-// to let it use the one next to itself. A failed patch is logged and falls
-// back to the unpatched harness so the gateway still serves.
-func (a *App) prepareHarness(ctx context.Context) string {
+// starter runs the configured runtime. The first start downloads the
+// runtime and patches the harness when configured; that happens inside the
+// supervisor, so the HTTP server answers health checks meanwhile. A failed
+// download is retried on the next start.
+func (a *App) starter() acp.Starter {
+	var (
+		mu    sync.Mutex
+		start acp.Starter
+	)
+	return func(ctx context.Context) (*acp.Process, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if start == nil {
+			cmd, err := RuntimeCmd(ctx, a.cfg, a.log)
+			if err != nil {
+				return nil, err
+			}
+			var env []string
+			if path := a.prepareHarness(ctx, cmd); path != "" {
+				env = append(env, harness.EnvVar+"="+path)
+			}
+			start = acp.ExecStarter(acp.ExecOptions{
+				Cmd: cmd, Args: a.cfg.RuntimeArgs, Home: a.cfg.RuntimeHome, Dir: a.cfg.WorkDir, Env: env,
+				Logger: a.log.With(slog.String("component", "runtime")),
+			})
+		}
+		return start(ctx)
+	}
+}
+
+func (a *App) harnessStatus() string {
+	s, _ := a.harness.Load().(string)
+	return s
+}
+
+// RuntimeCmd returns the runtime executable: cfg.RuntimeCmd if it exists,
+// otherwise, with RuntimeDownload, the official runtime downloaded into
+// cfg.RuntimeDir.
+func RuntimeCmd(ctx context.Context, cfg *config.Config, log *slog.Logger) (string, error) {
+	if _, err := exec.LookPath(cfg.RuntimeCmd); err == nil || !cfg.RuntimeDownload {
+		return cfg.RuntimeCmd, nil
+	}
+	cmd, err := install.Ensure(ctx, install.Options{
+		Version: cfg.RuntimeVersion, SHA256: cfg.RuntimeSHA256, Dir: cfg.RuntimeDir,
+		KeepOld: cfg.RuntimeKeepOld,
+		Logger:  log.With(slog.String("component", "install")),
+	})
+	if err != nil {
+		return "", fmt.Errorf("runtime download: %w", err)
+	}
+	return cmd, nil
+}
+
+// prepareHarness returns the harness path to hand to the runtime at cmd,
+// or "" to let it use the one next to itself. A failed patch is logged and
+// falls back to the unpatched harness so the gateway still serves.
+func (a *App) prepareHarness(ctx context.Context, cmd string) string {
 	cfg := a.cfg
 	if len(cfg.HarnessPatchCmd) == 0 {
 		if cfg.HarnessPath != "" {
-			a.Harness = "custom"
+			a.harness.Store("custom")
 		}
 		return cfg.HarnessPath
 	}
 	log := a.log.With(slog.String("component", "harness"))
 	path, err := harness.Prepare(ctx, harness.Options{
-		Source: cfg.HarnessPath, RuntimeCmd: cfg.RuntimeCmd, PatchCmd: cfg.HarnessPatchCmd,
+		Source: cfg.HarnessPath, RuntimeCmd: cmd, PatchCmd: cfg.HarnessPatchCmd,
 		CacheDir: cfg.HarnessCacheDir, Logger: log,
 	})
 	if err != nil {
-		a.Harness = "patch failed"
+		a.harness.Store("patch failed")
 		log.Error("harness patch failed; using the unpatched harness", slog.Any("err", err))
 		return cfg.HarnessPath
 	}
-	a.Harness = "patched"
+	a.harness.Store("patched")
 	log.Info("using patched harness", slog.String("path", path))
 	return path
 }

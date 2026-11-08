@@ -23,9 +23,7 @@ type ExecOptions struct {
 	Dir  string
 	// Env is added to the gateway's own environment.
 	Env []string
-	// Stderr, when set, receives raw stderr (used by the login command).
-	// Otherwise stderr lines are logged at debug level, redacted.
-	Stderr io.Writer
+	// Logger receives stderr lines at debug level, redacted.
 	Logger *slog.Logger
 }
 
@@ -49,18 +47,15 @@ func ExecStarter(o ExecOptions) Starter {
 		if err != nil {
 			return nil, err
 		}
-		var stderr io.ReadCloser
-		if o.Stderr != nil {
-			cmd.Stderr = o.Stderr
-		} else if stderr, err = cmd.StderrPipe(); err != nil {
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
 			return nil, err
 		}
 		if err := cmd.Start(); err != nil {
 			return nil, err
 		}
-		if stderr != nil && o.Logger != nil {
-			go logStderr(stderr, o.Logger)
-		}
+		authURLs := make(chan string, 1)
+		go scanStderr(stderr, o.Logger, authURLs)
 		done := make(chan struct{})
 		go func() {
 			_ = cmd.Wait()
@@ -80,17 +75,34 @@ func ExecStarter(o ExecOptions) Starter {
 				<-done
 			})
 		}
-		return &Process{Stdin: stdin, Stdout: stdout, Done: done, Kill: kill}, nil
+		return &Process{Stdin: stdin, Stdout: stdout, Done: done, Kill: kill, AuthURLs: authURLs}, nil
 	}
 }
 
-var sensitive = regexp.MustCompile(`(?i)(token|code=|bearer|secret|password|refresh|authorization|https?://\S*\?\S+)`)
+var (
+	sensitive = regexp.MustCompile(`(?i)(token|code=|bearer|secret|password|refresh|authorization|https?://\S*\?\S+)`)
+	// authURL matches the line the runtime prints during authenticate:
+	// "Open the following link to authenticate the ACP server: <url>".
+	authURL = regexp.MustCompile(`https://accounts\.google\.com/\S+`)
+)
 
-func logStderr(r io.Reader, log *slog.Logger) {
+// scanStderr logs stderr lines, redacted, and passes sign-in URLs to
+// authURLs, keeping only the newest.
+func scanStderr(r io.Reader, log *slog.Logger, authURLs chan string) {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
+		if u := authURL.FindString(line); u != "" {
+			select {
+			case <-authURLs:
+			default:
+			}
+			authURLs <- u
+		}
 		if sensitive.MatchString(line) {
 			line = "[redacted line]"
 		}

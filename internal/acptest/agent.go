@@ -11,11 +11,14 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	sdk "github.com/coder/acp-go-sdk"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -42,6 +45,10 @@ type Agent struct {
 	closed   []string
 	resumed  []string
 	calls    atomic.Int64
+
+	signedOut bool
+	authURLs  chan string
+	auths     int
 }
 
 // Session is the agent's view of one ACP session.
@@ -79,6 +86,7 @@ func (a *Agent) Starter() acp.Starter {
 		clientR, agentW := io.Pipe()
 		agentR, clientW := io.Pipe()
 		conn := sdk.NewAgentSideConnection(a, agentW, agentR)
+		authURLs := make(chan string, 1)
 		done := make(chan struct{})
 		var once sync.Once
 		kill := func() {
@@ -91,10 +99,10 @@ func (a *Agent) Starter() acp.Starter {
 			})
 		}
 		a.mu.Lock()
-		a.conn, a.kill = conn, kill
+		a.conn, a.kill, a.authURLs = conn, kill, authURLs
 		a.starts++
 		a.mu.Unlock()
-		return &acp.Process{Stdin: clientW, Stdout: clientR, Done: done, Kill: kill}, nil
+		return &acp.Process{Stdin: clientW, Stdout: clientR, Done: done, Kill: kill, AuthURLs: authURLs}, nil
 	}
 }
 
@@ -173,8 +181,59 @@ func (*Agent) Initialize(context.Context, sdk.InitializeRequest) (sdk.Initialize
 	}, nil
 }
 
-// Authenticate implements sdk.Agent.
-func (*Agent) Authenticate(context.Context, sdk.AuthenticateRequest) (sdk.AuthenticateResponse, error) {
+// SignOut makes the agent start signed out, like a runtime with no stored
+// credentials: session/new fails until authenticate completes.
+func (a *Agent) SignOut() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.signedOut = true
+}
+
+// Authentications counts authenticate requests.
+func (a *Agent) Authentications() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.auths
+}
+
+// Authenticate implements sdk.Agent. Signed out, it behaves like the
+// runtime's OAuth flow: it reports an authorize URL whose redirect_uri is a
+// loopback listener, and completes when that listener is called.
+func (a *Agent) Authenticate(ctx context.Context, _ sdk.AuthenticateRequest) (sdk.AuthenticateResponse, error) {
+	a.mu.Lock()
+	a.auths++
+	signedOut, urls := a.signedOut, a.authURLs
+	a.mu.Unlock()
+	if !signedOut {
+		return sdk.AuthenticateResponse{}, nil
+	}
+	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return sdk.AuthenticateResponse{}, err
+	}
+	called := make(chan struct{})
+	var once sync.Once
+	srv := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("code") == "" {
+			http.Error(w, "missing code", http.StatusBadRequest)
+			return
+		}
+		once.Do(func() { close(called) })
+		// The runtime redirects to a "signed in" page; it must not be followed.
+		http.Redirect(w, r, "http://203.0.113.1/signed-in", http.StatusFound)
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Close() }()
+	redirect := "http://" + ln.Addr().String() + "/"
+	urls <- "https://accounts.google.com/o/oauth2/v2/auth?state=s&redirect_uri=" + url.QueryEscape(redirect)
+	select {
+	case <-called:
+	case <-ctx.Done():
+		return sdk.AuthenticateResponse{}, ctx.Err()
+	}
+	a.mu.Lock()
+	a.signedOut = false
+	a.mu.Unlock()
 	return sdk.AuthenticateResponse{}, nil
 }
 
@@ -213,6 +272,9 @@ func configOptions() []sdk.SessionConfigOption {
 func (a *Agent) NewSession(_ context.Context, p sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.signedOut {
+		return sdk.NewSessionResponse{}, sdk.NewAuthRequired(map[string]any{"error": "not signed in"})
+	}
 	a.nextID++
 	id := fmt.Sprintf("sess-%d", a.nextID)
 	s := &Session{ID: id, servers: p.McpServers}

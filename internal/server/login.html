@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agy-gateway sign-in</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1f2328; --muted: #59636e; --bg: #fff; --line: #d1d9e0; --accent: #0969da; --ok: #1a7f37; --bad: #d1242f; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #f0f6fc; --muted: #9198a1; --bg: #0d1117; --line: #3d444d; --accent: #4493f8; --ok: #3fb950; --bad: #f85149; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p, li { color: var(--muted); }
+  section { border-top: 1px solid var(--line); padding: 16px 0; }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  input, textarea { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; font: 13px ui-monospace, monospace; }
+  textarea { height: 72px; resize: vertical; }
+  button { margin-top: 8px; padding: 7px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  a { color: var(--accent); word-break: break-all; }
+  .msg { min-height: 1.5em; margin-top: 8px; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sign in the runtime</h1>
+  <p id="status">Checking the runtime…</p>
+
+  <section>
+    <label for="key">API key</label>
+    <input id="key" type="password" autocomplete="off" placeholder="one of AGY_GW_API_KEYS; leave empty if none are set">
+  </section>
+
+  <section>
+    <label>1. Open the Google sign-in page</label>
+    <button id="start">Get sign-in link</button>
+    <div class="msg" id="start-msg"></div>
+  </section>
+
+  <section>
+    <label for="cb">2. Paste the address the browser was redirected to</label>
+    <p>After you sign in, the browser tries to open <code>http://127.0.0.1:…</code> and shows an error. That is expected: copy the whole address from the address bar.</p>
+    <textarea id="cb" spellcheck="false" placeholder="http://127.0.0.1:…"></textarea>
+    <button id="finish">Finish sign-in</button>
+    <div class="msg" id="finish-msg"></div>
+  </section>
+</main>
+<script src="/login.js"></script>
+</body>
+</html>

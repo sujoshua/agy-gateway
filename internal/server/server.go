@@ -29,7 +29,7 @@ type Options struct {
 	IgnoreUnsupported bool
 	EmitReasoning     bool
 	// Harness is reported by /readyz.
-	Harness string
+	Harness func() string
 	// Keepalive is the idle interval after which a stream sends an SSE
 	// comment so proxies keep the connection open.
 	Keepalive time.Duration
@@ -67,8 +67,9 @@ func (s *Server) Handler() http.Handler {
 		if !ok {
 			code = http.StatusServiceUnavailable
 		}
-		writeJSON(w, code, map[string]any{"ready": ok, "status": status, "sessions": s.mgr.Len(), "harness": s.opt.Harness})
+		writeJSON(w, code, map[string]any{"ready": ok, "status": status, "sessions": s.mgr.Len(), "harness": s.harness()})
 	})
+	s.loginRoutes(mux)
 	mux.HandleFunc("GET /v1/models", s.auth(s.models))
 	mux.HandleFunc("POST /v1/chat/completions", s.auth(s.chat))
 	mux.HandleFunc("/v1/responses", s.auth(func(w http.ResponseWriter, _ *http.Request, _ string) {
@@ -78,6 +79,13 @@ func (s *Server) Handler() http.Handler {
 		writeError(w, openai.NotFound("unknown route %s %s", r.Method, r.URL.Path))
 	})
 	return mux
+}
+
+func (s *Server) harness() string {
+	if s.opt.Harness == nil {
+		return ""
+	}
+	return s.opt.Harness()
 }
 
 // auth checks the bearer key and passes an owner id: a hash of the key,

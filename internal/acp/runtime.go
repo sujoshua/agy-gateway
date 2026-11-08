@@ -32,6 +32,9 @@ type Process struct {
 	Done <-chan struct{}
 	// Kill stops the process; it must be safe to call more than once.
 	Kill func()
+	// AuthURLs receives the sign-in URL the runtime prints during
+	// authenticate. Nil when the process cannot report it.
+	AuthURLs <-chan string
 }
 
 // Starter launches a runtime process.
@@ -70,12 +73,17 @@ type Runtime struct {
 
 	mu       sync.RWMutex
 	conn     *sdk.ClientSideConnection
+	authURLs <-chan string
+	login    *pendingLogin
 	ready    bool
 	status   string
 	models   []Model
 	modelOpt string // config option id for the model
 	levelOpt string // config option id for the thought level
 	tier     string
+
+	// loginMu serializes StartLogin and FinishLogin.
+	loginMu sync.Mutex
 }
 
 // New creates a Runtime; call Run to start it.
@@ -136,6 +144,7 @@ func (r *Runtime) runOnce(ctx context.Context) error {
 	}
 	r.mu.Lock()
 	r.conn = conn
+	r.authURLs = proc.AuthURLs
 	r.status = "discovering models"
 	r.mu.Unlock()
 
@@ -156,6 +165,9 @@ func (r *Runtime) runOnce(ctx context.Context) error {
 func (r *Runtime) discoverLoop(ctx context.Context, conn *sdk.ClientSideConnection) {
 	delay := 5 * time.Second
 	for {
+		if r.readyOn(conn) {
+			return
+		}
 		err := r.discover(ctx, conn)
 		if err == nil {
 			return
@@ -167,7 +179,7 @@ func (r *Runtime) discoverLoop(ctx context.Context, conn *sdk.ClientSideConnecti
 		}
 		r.status = "model discovery failed: " + err.Error()
 		r.mu.Unlock()
-		r.log.Warn("model discovery failed (if the error mentions authentication, run agy-gateway login)", slog.Any("err", err))
+		r.log.Warn("model discovery failed (if the runtime is not signed in, open /login or run agy-gateway login)", slog.Any("err", err))
 		select {
 		case <-ctx.Done():
 			return
@@ -265,10 +277,18 @@ func dig(m map[string]any, path ...string) any {
 	return cur
 }
 
+func (r *Runtime) readyOn(conn *sdk.ClientSideConnection) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.conn == conn && r.ready
+}
+
 func (r *Runtime) setDown(status string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.conn = nil
+	r.authURLs = nil
+	r.login = nil
 	r.ready = false
 	r.status = status
 }
@@ -288,6 +308,13 @@ func (r *Runtime) Ready() (ok bool, status string) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.ready, r.status
+}
+
+// Tier is the account tier the runtime reported, "" before discovery.
+func (r *Runtime) Tier() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.tier
 }
 
 // Models returns the discovered models.

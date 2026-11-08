@@ -101,3 +101,8 @@ func RateLimited(format string, args ...any) *Error {
 func Upstream(format string, args ...any) *Error {
 	return newError(http.StatusBadGateway, "server_error", "upstream_error", "", format, args...)
 }
+
+// Conflict is a 409 for a request the gateway's current state rules out.
+func Conflict(code, format string, args ...any) *Error {
+	return newError(http.StatusConflict, "invalid_request_error", code, "", format, args...)
+}

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sujoshua/agy-gateway/internal/install"
 )
 
 // Config holds every tunable of the gateway. Values come from AGY_GW_*
@@ -25,6 +27,18 @@ type Config struct {
 	// RuntimeCmd and RuntimeArgs start the official ACP runtime.
 	RuntimeCmd  string
 	RuntimeArgs []string
+	// RuntimeDownload fetches the official runtime from Google into
+	// RuntimeDir when RuntimeCmd does not exist.
+	RuntimeDownload bool
+	// RuntimeVersion and RuntimeSHA256 pick the downloaded archive; an empty
+	// checksum uses the one pinned for that version.
+	RuntimeVersion string
+	RuntimeSHA256  string
+	// RuntimeKeepOld keeps other downloaded versions instead of removing
+	// them once RuntimeVersion is installed.
+	RuntimeKeepOld bool
+	// RuntimeDir holds downloaded runtimes, next to the runtime state.
+	RuntimeDir string
 	// RuntimeHome overrides HOME for the runtime so its state directory
 	// (~/.gemini/antigravity-acp) can live on a volume. Empty keeps HOME.
 	RuntimeHome string
@@ -63,6 +77,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		BridgeListen:      "127.0.0.1:0",
 		RuntimeCmd:        "agy_acp_server.par",
 		RuntimeArgs:       []string{"--uid="},
+		RuntimeVersion:    install.DefaultVersion,
 		WorkDir:           filepath.Join(os.TempDir(), "agy-gateway"),
 		SessionTTL:        30 * time.Minute,
 		MaxSessions:       64,
@@ -125,6 +140,8 @@ func Load(getenv func(string) string) (*Config, error) {
 		c.RuntimeArgs = strings.Fields(v)
 	}
 	str("AGY_GW_RUNTIME_HOME", &c.RuntimeHome)
+	str("AGY_GW_RUNTIME_VERSION", &c.RuntimeVersion)
+	str("AGY_GW_RUNTIME_SHA256", &c.RuntimeSHA256)
 	str("AGY_GW_WORKDIR", &c.WorkDir)
 	str("AGY_GW_HARNESS_PATH", &c.HarnessPath)
 	c.HarnessPatchCmd = strings.Fields(getenv("AGY_GW_HARNESS_PATCH_CMD"))
@@ -140,6 +157,8 @@ func Load(getenv func(string) string) (*Config, error) {
 	num("AGY_GW_SCHEMA_BUDGET", &c.SchemaBudget)
 	boolean("AGY_GW_IGNORE_UNSUPPORTED_PARAMS", &c.IgnoreUnsupported)
 	boolean("AGY_GW_EMIT_REASONING", &c.EmitReasoning)
+	boolean("AGY_GW_RUNTIME_DOWNLOAD", &c.RuntimeDownload)
+	boolean("AGY_GW_RUNTIME_KEEP_OLD", &c.RuntimeKeepOld)
 	for k := range strings.SplitSeq(getenv("AGY_GW_API_KEYS"), ",") {
 		if k = strings.TrimSpace(k); k != "" {
 			c.APIKeys = append(c.APIKeys, k)
@@ -161,22 +180,24 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, err
 	}
 	if c.HarnessCacheDir == "" {
-		c.HarnessCacheDir = defaultCacheDir(c)
+		c.HarnessCacheDir = cacheDir(c, "harness")
 	}
+	c.RuntimeDir = cacheDir(c, "runtime")
 	return c, nil
 }
 
-// defaultCacheDir keeps patched harness copies next to the runtime's state,
-// which is a volume in the container image, so restarts reuse them.
-func defaultCacheDir(c *Config) string {
+// cacheDir keeps patched harness copies and downloaded runtimes next to the
+// runtime's state, which is a volume in the container image, so restarts
+// reuse them.
+func cacheDir(c *Config, name string) string {
 	home := c.RuntimeHome
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
 	if home == "" {
-		return filepath.Join(c.WorkDir, "harness")
+		return filepath.Join(c.WorkDir, name)
 	}
-	return filepath.Join(home, ".cache", "agy-gateway", "harness")
+	return filepath.Join(home, ".cache", "agy-gateway", name)
 }
 
 func lookup(getenv func(string) string, key string) (string, bool) {

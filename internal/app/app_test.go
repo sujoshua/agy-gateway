@@ -36,6 +36,14 @@ type env struct {
 
 func newEnv(t *testing.T, mutate func(*config.Config)) *env {
 	t.Helper()
+	e := startEnv(t, mutate, acptest.New())
+	e.waitReady()
+	return e
+}
+
+// startEnv starts a gateway on agent without waiting for it to be ready.
+func startEnv(t *testing.T, mutate func(*config.Config), agent *acptest.Agent) *env {
+	t.Helper()
 	dir := t.TempDir()
 	cfg, err := config.Load(func(k string) string {
 		switch k {
@@ -61,7 +69,6 @@ func newEnv(t *testing.T, mutate func(*config.Config)) *env {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
-	agent := acptest.New()
 	ctx, cancel := context.WithCancel(context.Background())
 	a, err := app.New(ctx, cfg, log, "test", agent.Starter())
 	if err != nil {
@@ -75,9 +82,7 @@ func newEnv(t *testing.T, mutate func(*config.Config)) *env {
 		cancel()
 		<-done
 	})
-	e := &env{t: t, agent: agent, app: a, url: srv.URL}
-	e.waitReady()
-	return e
+	return &env{t: t, agent: agent, app: a, url: srv.URL}
 }
 
 func (e *env) waitReady() {

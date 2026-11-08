@@ -94,7 +94,7 @@ client ──HTTP──▶ server ──▶ session.Manager ──ACP (stdio)─
 
 ### 前置条件
 
-- 对应平台的 Antigravity ACP runtime，解压后 `agy_acp_server.par` 和 `localharness_external` 要放在同一目录。Google 以 zip 形式发布，例如 `https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-x86_64.zip`。网关依赖的 runtime 行为见 [docs/runtime-notes.md](docs/runtime-notes.md)。
+- 对应平台的 Antigravity ACP runtime，解压后 `agy_acp_server.par` 和 `localharness_external` 要放在同一目录。Google 以 zip 形式发布，例如 `https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-x86_64.zip`。在 Linux 上也可以让网关自动下载，见 [自动下载 runtime](#自动下载-runtime)。网关依赖的 runtime 行为见 [docs/runtime-notes.md](docs/runtime-notes.md)。
 - 一个 Antigravity 账号。
 
 ### 安装
@@ -111,25 +111,48 @@ client ──HTTP──▶ server ──▶ session.Manager ──ACP (stdio)─
 
   二进制输出到 `bin/agy-gateway`，下面的示例都用这个路径。
 
-### 登录
-
-runtime 只需登录一次。这一步是交互式的：打开输出的 URL 并登录，然后把浏览器跳转到的 `http://127.0.0.1:…` 地址粘贴回来。如果 runtime 已经登录，这一步什么也不做。
-
-```bash
-AGY_GW_RUNTIME_CMD=/opt/agy/agy_acp_server.par ./bin/agy-gateway login
-```
-
 ### 运行
 
 ```bash
 AGY_GW_RUNTIME_CMD=/opt/agy/agy_acp_server.par AGY_GW_API_KEYS=change-me ./bin/agy-gateway serve
 ```
 
+### 登录
+
+runtime 只需登录一次。网关在未登录时也能启动，此时 `/readyz` 返回 503。下面两种方式走的都是 runtime 自己的 Google 登录流程：网关只转发跳转地址，从不读取凭证，凭证留在 runtime 的状态目录里。
+
+**在浏览器中。** 打开 `http://<host>:8080/login`，填入 API key，点击 **Get sign-in link**，在新标签页里登录 Google。之后浏览器会打不开一个 `http://127.0.0.1:…` 地址，把地址栏里的这个地址复制下来粘贴到页面上，点击 **Finish sign-in**。runtime 无需重启即可就绪。页面用到的两个接口也可以在脚本里直接调用：
+
+| 接口 | 请求体 | 返回 |
+|---|---|---|
+| `POST /login/start` | 无 | `{"auth_url": "https://accounts.google.com/..."}`；已登录时返回 409 `already_signed_in`。 |
+| `POST /login/finish` | `{"callback_url": "http://127.0.0.1:…"}` | `{"signed_in": true, "tier": "..."}` |
+
+设置了 `AGY_GW_API_KEYS` 时，两个接口都需要 `Authorization: Bearer <key>`。网关只转发 `127.0.0.1` 或 `localhost` 地址，并且只发给 runtime 自己的监听端口。发起的登录最多等待 10 分钟。
+
+**在命令行中。** 在第一次 `serve` 之前，或者网关停止时：
+
+```bash
+AGY_GW_RUNTIME_CMD=/opt/agy/agy_acp_server.par ./bin/agy-gateway login
+```
+
+打开输出的 URL 并登录，然后把浏览器跳转到的 `http://127.0.0.1:…` 地址粘贴回来。如果 runtime 已经登录，这一步什么也不做。
+
+之后：
+
 ```bash
 curl -s localhost:8080/v1/chat/completions -H 'Authorization: Bearer change-me' -H 'Content-Type: application/json' -d '{"model":"gemini-3.8-flash-low","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 runtime 的状态（登录信息和对话）保存在 `$AGY_GW_RUNTIME_HOME/.gemini/antigravity-acp`。`AGY_GW_RUNTIME_HOME` 默认是 `$HOME`。
+
+### 自动下载 runtime
+
+设置 `AGY_GW_RUNTIME_DOWNLOAD=true` 且找不到 `AGY_GW_RUNTIME_CMD` 时，网关会在第一次启动时从 `dl.google.com` 下载官方 Linux 压缩包（amd64 或 arm64），用网关内置的 SHA-256 校验，只解压 `agy_acp_server.par` 和 `localharness_external` 到 `$AGY_GW_RUNTIME_HOME/.cache/agy-gateway/runtime/<version>`，之后一直使用这份。下载约 320 MB，解压后约 1 GB。runtime 不会被修改。下载期间 `/healthz` 正常响应。
+
+`AGY_GW_RUNTIME_VERSION` 指定版本（默认 `1.4.5`）。没有内置校验和的版本还需要设置 `AGY_GW_RUNTIME_SHA256`。二进制默认关闭下载，容器镜像默认开启。
+
+升级时改版本号并重启即可。新版本就位后，网关会删除它下载过的其他版本，以及一小时前中断的残留下载。设置 `AGY_GW_RUNTIME_KEEP_OLD=true` 可以保留旧版本以便快速回滚，切回保留的版本无需重新下载。网关不会自行检查新版本。
 
 ## Docker
 
@@ -140,15 +163,13 @@ runtime 的状态（登录信息和对话）保存在 `$AGY_GW_RUNTIME_HOME/.gem
 | `latest`、`X.Y.Z`、`X.Y` | 发版标签。 |
 | `edge` | `main` 分支的最新提交。 |
 
-本仓库不分发 runtime，所以镜像里不包含它。把 runtime 目录以只读方式挂载到 `/opt/agy`，并在 `/data` 挂一个卷保存 runtime 状态。
+本仓库不分发 runtime，所以镜像里不包含它。容器默认在第一次启动时从 Google 下载（见 [自动下载 runtime](#自动下载-runtime)），和 runtime 状态一起保存在 `/data` 卷里。
 
 ```bash
-docker run -it --rm -v /path/to/agy-runtime:/opt/agy:ro -v agy-data:/data ghcr.io/sujoshua/agy-gateway:latest login
+docker run -d --name agy-gw -p 8080:8080 -v agy-data:/data -e AGY_GW_API_KEYS=change-me -e AGY_GW_IGNORE_UNSUPPORTED_PARAMS=true ghcr.io/sujoshua/agy-gateway:latest
 ```
 
-```bash
-docker run -d --name agy-gw -p 8080:8080 -v /path/to/agy-runtime:/opt/agy:ro -v agy-data:/data -e AGY_GW_API_KEYS=change-me -e AGY_GW_IGNORE_UNSUPPORTED_PARAMS=true ghcr.io/sujoshua/agy-gateway:latest
-```
+然后打开 `http://localhost:8080/login` 登录。如果想用已有的 runtime，把它的目录以只读方式挂载到 `/opt/agy`（`-v /path/to/agy-runtime:/opt/agy:ro`），它优先于自动下载。
 
 自己构建镜像：
 
@@ -162,7 +183,7 @@ docker build -t agy-gateway .
 
 - 基于 `debian:bookworm-slim`，因为 runtime 需要 glibc 和 CA 证书。
 - 以 uid 10001 运行在 `tini` 之下，也支持任意 uid。
-- 新容器第一次启动需要几十秒，用来解压 `.par`。
+- 新容器第一次启动需要几分钟下载，再用几十秒解压 `.par`。之后启动不再下载。
 
 ## 生产环境运行
 
@@ -182,6 +203,10 @@ docker build -t agy-gateway .
 | `AGY_GW_RUNTIME_CMD` | `agy_acp_server.par` | runtime 可执行文件。 |
 | `AGY_GW_RUNTIME_ARGS` | `--uid=` | runtime 参数。 |
 | `AGY_GW_RUNTIME_HOME` | `$HOME` | runtime 的 HOME，其中保存登录状态。 |
+| `AGY_GW_RUNTIME_DOWNLOAD` | `false`（镜像中为 `true`） | 找不到 `AGY_GW_RUNTIME_CMD` 时下载官方 runtime。 |
+| `AGY_GW_RUNTIME_VERSION` | `1.4.5` | 要下载的 runtime 版本。 |
+| `AGY_GW_RUNTIME_SHA256` | 内置 | 压缩包校验和，用于没有内置校验和的版本。 |
+| `AGY_GW_RUNTIME_KEEP_OLD` | `false` | 保留下载过的其他版本，而不是删除。 |
 | `AGY_GW_WORKDIR` | `/tmp/agy-gateway` | 每个会话的空工作目录所在的父目录。 |
 | `AGY_GW_BRIDGE_LISTEN` | `127.0.0.1:0` | 回环 MCP 桥的地址。 |
 | `AGY_GW_MCP_SERVER_NAME` | `client` | 模型看到的工具名为 `<name>_<tool>`。 |
@@ -240,7 +265,7 @@ system 和 developer 消息会追加到 runtime 自带的系统提示词之后�
 | 400 | 请求无效或不支持；重复提交工具结果。 |
 | 401 | 缺少 API key 或 key 错误。 |
 | 404 | 未知的模型或路由。 |
-| 409 | 该对话正在处理另一个请求。 |
+| 409 | 该对话正在处理另一个请求；在 `/login/*` 上表示已登录或尚未发起登录。 |
 | 429 | runtime 配额用尽，或所有会话槽位都在忙。 |
 | 502 | runtime 返回了错误。 |
 | 503 | runtime 未就绪，例如正在启动、重启或未登录。 |
