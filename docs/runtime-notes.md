@@ -80,8 +80,20 @@ session `list`/`resume`/`additionalDirectories`, `auth.logout`,
 - agy-context-unlock (`agy-patch.py`) recognizes this harness as a
   "standalone language_server" and applies gates 3A, 3B, 4A and 4B. Harness
   sha256 `6c6d28b61a70…` becomes `6ed860c0b1ea…`.
-- With the patch, a single 324,543-token prompt was accepted and answered
-  correctly.
+- That patch does not lift the 256K limit. At request time
+  `localagent.makeCascadeConfigWithSkillsRunnerAndFS` reads the AgentConfig's
+  `compaction_config`; when it is unset (the ACP runtime never sets it, and
+  only ever sends `token_threshold`) it defaults to `token_threshold` 140000
+  and `checkpoint_config.max_token_limit` 256000. The model's own 1M limit is
+  then capped at 256000, and larger requests fail with "exceeding
+  cascade_config.checkpoint_config.max_token_limit (256000)". The
+  per-model limits in the embedded model_profiles flags do not affect it.
+- `scripts/agy-limit-patch.py` rewrites that immediate to 983040: on x86_64
+  `mov esi,0x3e800` (file offset 0x5a55764), on arm64
+  `mov x4,#0xe800; movk x4,#0x3,lsl#16` (file offset 0x5628fe0). With both
+  patches, single prompts of 378,566 and 824,346 tokens were answered; the
+  first recalled both codes. The limit change alone is not enough: the
+  input is then truncated before it reaches the model.
 - Without it, a 135K-token user message is cut. The model then loses the
   question and may spend many internal steps: one such turn reported 818K
   prompt tokens.

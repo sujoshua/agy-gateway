@@ -420,8 +420,11 @@ The integration tests use the official
 The official runtime limits a conversation to 256K tokens and cuts a single
 user message at 64K. Third-party patches such as
 [`agy-context-unlock`](https://github.com/lili-luo/dsh-plugin-bundle/tree/main/agy-context-unlock)
-raise this to about 1M by rewriting machine code in Antigravity binaries.
-The gateway can apply such a patch, but **it is off by default**. Running
+remove the 64K cut by rewriting machine code in Antigravity binaries. The
+256K limit is a separate constant that agy-context-unlock leaves alone;
+[`scripts/agy-limit-patch.py`](scripts/agy-limit-patch.py) raises it to
+983,040 tokens and can run agy-context-unlock first, so one command does
+both. The gateway can apply such a patch, but **it is off by default**. Running
 the runtime on a patched harness is your own decision and your own risk.
 
 How it works when `AGY_GW_HARNESS_PATCH_CMD` is set:
@@ -443,8 +446,15 @@ error and falls back to the official harness, so it keeps serving at 256K.
 `custom`, `patched`, or `patch failed`.
 
 ```bash
-AGY_GW_HARNESS_PATCH_CMD="python3 /opt/agy-patch/agy-patch.py --in-place --no-backup --binary" ./bin/agy-gateway serve
+AGY_GW_HARNESS_PATCH_CMD="python3 /opt/agy-patch/agy-limit-patch.py --dsh /opt/agy-patch/agy-patch.py" ./bin/agy-gateway serve
 ```
+
+`agy-limit-patch.py` finds the constant by the instructions around it, on
+x86_64 and arm64. If they are not there exactly once, it changes nothing
+and fails, and the gateway falls back as described above. agy-context-unlock
+alone (`python3 /opt/agy-patch/agy-patch.py --in-place --no-backup --binary`)
+still fails any request over 256,000 tokens with "exceeding
+cascade_config.checkpoint_config.max_token_limit".
 
 The image does not include Python. In containers, either patch a copy on the
 host and mount it with `AGY_GW_HARNESS_PATH`, or build your own image that
@@ -452,15 +462,20 @@ adds `python3` and the script. With a larger window, raise
 `AGY_GW_REPLAY_BUDGET` too, so a replayed transcript can use the space.
 
 Verified with runtime 1.4.5 and agy-context-unlock as of 2026-11-08, using
-model `gemini-3.8-flash-low`. The gateway applied gates 3A, 3B, 4A and 4B
-(the CLI-only gates 1, 2 and the bonus gate do not exist in the harness).
-Each request was one user message with a code at its very start and another
-at its very end:
+model `gemini-3.8-flash-low`. agy-context-unlock applied gates 3A, 3B, 4A
+and 4B (the CLI-only gates 1, 2 and the bonus gate do not exist in the
+harness). Each request was one user message with a code at its very start
+and another at its very end:
 
-| Message size | Official harness | Patched harness |
-|---|---|---|
-| ≈135K tokens | The message was cut at 64K. The model never saw the question, wandered through several internal steps, and used 818,048 prompt tokens. | Both codes correct, 148,918 prompt tokens. |
-| ≈310K tokens | not run | Both codes correct, 324,543 prompt tokens. That is past the official 256K limit. |
+| Message size | Official harness | agy-context-unlock only | Both patches |
+|---|---|---|---|
+| ≈135K tokens | The message was cut at 64K. The model never saw the question, wandered through several internal steps, and used 818,048 prompt tokens. | Both codes correct, 148,918 prompt tokens. | |
+| ≈320K tokens | | Rejected: 318,805 tokens is over the 256,000 limit. | |
+| ≈380K tokens | | | Both codes correct, 378,566 prompt tokens. |
+| ≈825K tokens | | | Answered, 824,346 prompt tokens. |
+
+The compaction threshold next to the limit (140,000 tokens) is left as it
+is.
 
 A patch that targets a future runtime version may fail. In that case the
 gateway falls back to the official harness and `/readyz` reports

@@ -292,7 +292,7 @@ system 和 developer 消息会追加到 runtime 自带的系统提示词之后�
 
 ## 可选：更大的上下文窗口
 
-官方 runtime 把一次对话限制在 256K token，并在 64K 处截断单条用户消息。第三方补丁如 [`agy-context-unlock`](https://github.com/lili-luo/dsh-plugin-bundle/tree/main/agy-context-unlock) 通过改写 Antigravity 二进制中的机器码，把上限提高到约 1M。网关可以应用这类补丁，但**默认关闭**。是否让 runtime 运行在打过补丁的 harness 上，由你自己决定，风险也由你自己承担。
+官方 runtime 把一次对话限制在 256K token，并在 64K 处截断单条用户消息。第三方补丁如 [`agy-context-unlock`](https://github.com/lili-luo/dsh-plugin-bundle/tree/main/agy-context-unlock) 通过改写 Antigravity 二进制中的机器码，去掉 64K 截断。256K 上限是另一个常量，agy-context-unlock 不会改它；[`scripts/agy-limit-patch.py`](scripts/agy-limit-patch.py) 把它提高到 983,040 token，并且可以先运行 agy-context-unlock，一条命令完成两步。网关可以应用这类补丁，但**默认关闭**。是否让 runtime 运行在打过补丁的 harness 上，由你自己决定，风险也由你自己承担。
 
 设置 `AGY_GW_HARNESS_PATCH_CMD` 后的流程：
 
@@ -305,17 +305,23 @@ system 和 developer 消息会追加到 runtime 自带的系统提示词之后�
 如果命令失败，或者文件没有任何变化，网关会记录错误并回退到官方 harness，继续以 256K 提供服务。`/readyz` 的 `harness` 字段会显示当前使用的 harness：`official`、`custom`、`patched` 或 `patch failed`。
 
 ```bash
-AGY_GW_HARNESS_PATCH_CMD="python3 /opt/agy-patch/agy-patch.py --in-place --no-backup --binary" ./bin/agy-gateway serve
+AGY_GW_HARNESS_PATCH_CMD="python3 /opt/agy-patch/agy-limit-patch.py --dsh /opt/agy-patch/agy-patch.py" ./bin/agy-gateway serve
 ```
+
+`agy-limit-patch.py` 根据常量前后的指令定位它，支持 x86_64 和 arm64。如果这些指令不是恰好出现一次，它什么都不改并返回失败，网关按上面的方式回退。只用 agy-context-unlock（`python3 /opt/agy-patch/agy-patch.py --in-place --no-backup --binary`）时，超过 256,000 token 的请求仍会失败，报错 "exceeding cascade_config.checkpoint_config.max_token_limit"。
 
 镜像里没有 Python。在容器中，可以在宿主机上给副本打好补丁再通过 `AGY_GW_HARNESS_PATH` 挂载，或者自己构建一个加了 `python3` 和脚本的镜像。窗口变大后，也请调大 `AGY_GW_REPLAY_BUDGET`，让重放的历史能利用这些空间。
 
-验证环境：runtime 1.4.5，agy-context-unlock 截至 2026-11-08 的版本，模型 `gemini-3.8-flash-low`。网关应用了 3A、3B、4A 和 4B 四处补丁（只属于 CLI 的 1、2 和 bonus 在 harness 中不存在）。每个请求都是一条用户消息，开头和结尾各藏一个暗号：
+验证环境：runtime 1.4.5，agy-context-unlock 截至 2026-11-08 的版本，模型 `gemini-3.8-flash-low`。agy-context-unlock 应用了 3A、3B、4A 和 4B 四处补丁（只属于 CLI 的 1、2 和 bonus 在 harness 中不存在）。每个请求都是一条用户消息，开头和结尾各藏一个暗号：
 
-| 消息大小 | 官方 harness | 打补丁的 harness |
-|---|---|---|
-| ≈135K token | 消息在 64K 处被截断。模型没看到问题，在内部绕了好几步，用了 818,048 个 prompt token。 | 两个暗号都正确，148,918 个 prompt token。 |
-| ≈310K token | 未测试 | 两个暗号都正确，324,543 个 prompt token，超过了官方 256K 的上限。 |
+| 消息大小 | 官方 harness | 只用 agy-context-unlock | 两个补丁都用 |
+|---|---|---|---|
+| ≈135K token | 消息在 64K 处被截断。模型没看到问题，在内部绕了好几步，用了 818,048 个 prompt token。 | 两个暗号都正确，148,918 个 prompt token。 | |
+| ≈320K token | | 被拒绝：318,805 token 超过 256,000 上限。 | |
+| ≈380K token | | | 两个暗号都正确，378,566 个 prompt token。 |
+| ≈825K token | | | 正常回答，824,346 个 prompt token。 |
+
+上限旁边的压缩阈值（140,000 token）保持不变。
 
 针对未来 runtime 版本的补丁可能失败。这时网关会回退到官方 harness，`/readyz` 显示 `patch failed`。
 
