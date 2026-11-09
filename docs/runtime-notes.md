@@ -123,3 +123,20 @@ session `list`/`resume`/`additionalDirectories`, `auth.logout`,
 - The gateway passes client `system` and `developer` messages through
   `_meta.antigravity.systemPrompt.append`, which adds them to this prompt
   rather than replacing it.
+
+## Quota
+
+- An exhausted quota does not fail `session/prompt`. The runtime sends one
+  `agent_message_chunk` with `Usage Limit Reached\n\nYou have reached your
+  current quota for this period.`, optionally followed by `Your limit will
+  reset in 1 hour, 19 minutes.` (two largest units, rounded down) or `Your
+  limit will reset on Nov 9, 2026 10:32 UTC.`, and ends the turn with
+  `end_turn`. Other model errors arrive the same way, as their message text.
+- A prompt that is exactly `/usage` is answered by the runtime without a
+  model call: a Markdown report with a `### Quota Limits` section listing
+  groups (`Gemini Models`, `Claude and GPT models`) and buckets such as
+  `Five Hour Limit Remaining: 0% remaining (resets Nov 09, 2026, 10:32 UTC)`.
+  It took about 3 s on a fresh session.
+- Observed on 2026-11-09: the Gemini five-hour bucket at 0% while the weekly
+  bucket had 56% left; the delay in the chat message matched the bucket's
+  reset time.

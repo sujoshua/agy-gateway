@@ -355,6 +355,7 @@ them all with their defaults.
 | `finish_reason` | `stop`, `tool_calls`, `length`, and `content_filter`. |
 | `response_format` | `text`, and `json_object` as best effort; see below. |
 | `user` | Further isolates sessions within one API key. |
+| `GET /v1/quota` | Gateway extension: the account's quota; see [Quota](#quota). |
 | `/v1/responses` | Not implemented. Returns 404 with an explanation. |
 
 System and developer messages are appended to the runtime's own built-in
@@ -394,13 +395,57 @@ Errors use the OpenAI shape `{"error":{"message","type","code"}}`.
 | 401 | Missing or wrong API key. |
 | 404 | Unknown model or route. |
 | 409 | The conversation is busy with another request; on `/login/*`, already signed in or no sign-in started. |
-| 429 | Runtime quota exhausted, or every session slot is busy. |
+| 429 | The account's quota is used up (see [Quota](#quota)), the runtime reported a rate limit, or every session slot is busy. |
 | 502 | The runtime returned an error. |
 | 503 | The runtime is not ready, for example while starting, restarting, or signed out. |
 | 504 | `AGY_GW_REQUEST_TIMEOUT` expired. |
 
 Once a stream has started, a failure is sent as a final `data: {"error":…}`
 event, without `[DONE]`, so clients see that the stream was truncated.
+
+### Quota
+
+When the account's quota is used up, the runtime does not fail the turn: it
+answers with a "Usage Limit Reached" message. The gateway recognizes that
+message and returns 429 instead of passing it on as the reply:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 9000
+
+{"error":{"message":"the account's usage limit is reached; it resets at 2026-11-09T14:30:00Z",
+  "type":"usage_limit_reached","code":"usage_limit_reached","param":null,
+  "resets_at":1794234600,"resets_in_seconds":9000}}
+```
+
+- `Retry-After` and `resets_in_seconds` are seconds until the reset;
+  `resets_at` is a Unix time. All three are left out when the runtime does
+  not say when the quota resets.
+- The runtime rounds the delay down to its two largest units, such as
+  "4 days, 23 hours", so the reset may come up to one unit later than stated.
+  A request after that point gets a new, more precise 429.
+- Until the reset, chat requests get the same 429 at once, without reaching
+  the runtime.
+
+`GET /v1/quota` (with an API key) reports the quota through the runtime's
+`/usage` command, which makes no model call. The answer is cached for 30
+seconds:
+
+```json
+{"object":"quota","limited":false,
+ "groups":[{"name":"Gemini Models","buckets":[{"name":"Weekly Limit Remaining",
+   "remaining_percent":91,"resets_at":1790929320,"status":"91% remaining (resets Oct 02, 2026, 08:22 UTC)"}]}],
+ "text":"### Session Usage\n…"}
+```
+
+- `limited` and `resets_at` at the top level tell whether chat requests are
+  being refused, and until when.
+- A bucket has `remaining_percent` or `remaining_units`, whichever the
+  runtime gives, and `disabled` for limits that do not apply. Reset times
+  have minute precision.
+- `error` is set when the runtime could not fetch the quota, and `note` when
+  it reports no limits. `text` is the runtime's report as received.
+- A report in which no bucket is used up lifts the block early.
 
 ## Using it with OpenAI clients
 

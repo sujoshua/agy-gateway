@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 	s.loginRoutes(mux)
 	mux.HandleFunc("GET /v1/models", s.auth(s.models))
 	mux.HandleFunc("POST /v1/chat/completions", s.auth(s.chat))
+	mux.HandleFunc("GET /v1/quota", s.auth(s.quota))
 	mux.HandleFunc("/v1/responses", s.auth(func(w http.ResponseWriter, _ *http.Request, _ string) {
 		writeError(w, openai.NotFound("this gateway implements only /v1/chat/completions; configure the client for Chat Completions"))
 	}))
@@ -119,6 +120,36 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request, _ string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// quotaReport is the body of GET /v1/quota.
+type quotaReport struct {
+	Object string `json:"object"`
+	// Limited is set while chat requests are refused because the quota is
+	// exhausted; ResetsAt (Unix seconds) is when that ends.
+	Limited  bool   `json:"limited"`
+	ResetsAt *int64 `json:"resets_at,omitempty"`
+	*session.Quota
+}
+
+func (s *Server) quota(w http.ResponseWriter, r *http.Request, _ string) {
+	if ok, status := s.rt.Ready(); !ok {
+		writeError(w, openai.Unavailable("the runtime is not ready: %s", status))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	q, err := s.mgr.Quota(ctx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	rep := quotaReport{Object: "quota", Quota: q}
+	if at := s.mgr.Limited(); !at.IsZero() {
+		unix := at.Unix()
+		rep.Limited, rep.ResetsAt = true, &unix
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 func (s *Server) chat(w http.ResponseWriter, r *http.Request, owner string) {
@@ -231,6 +262,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, e *openai.Error) {
 	w.Header().Set("Content-Type", "application/json")
+	if ra := e.RetryAfter(); ra != "" {
+		w.Header().Set("Retry-After", ra)
+	}
 	w.WriteHeader(e.Status)
 	_, _ = w.Write(e.MarshalEnvelope()) //nolint:gosec // G705: a JSON error body served as application/json, not HTML.
 }

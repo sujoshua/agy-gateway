@@ -13,8 +13,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1103,4 +1105,72 @@ func TestNotReadyIs503(t *testing.T) {
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("%d %v", status, resp)
 	}
+}
+
+const usageReport = "### Session Usage\n- **Session total:** data not available yet\n\n### Quota Limits\n- **Gemini Models**\n  - **Weekly Limit Remaining:** 40% remaining (resets Oct 02, 2026, 08:22 UTC)\n"
+
+// TestQuotaExhausted covers the runtime's quota message: it becomes a 429
+// that says when to retry, later requests fail fast until then, and a
+// quota report with limits left lifts the block.
+func TestQuotaExhausted(t *testing.T) {
+	e := newEnv(t, nil)
+	var prompts atomic.Int32
+	e.agent.OnPrompt(func(t *acptest.Turn) (sdk.StopReason, error) {
+		if t.Text() == "/usage" {
+			return sdk.StopReasonEndTurn, t.Say(usageReport)
+		}
+		prompts.Add(1)
+		return sdk.StopReasonEndTurn, t.Say("Usage Limit Reached\n\nYou have reached your current quota for this period. Your limit will reset in 2 hours, 30 minutes.")
+	})
+
+	body := map[string]any{"model": "mock-1", "stream": true, "messages": []any{user("x")}}
+	resp := e.do(http.MethodPost, "/v1/chat/completions", key, body)
+	var reply struct {
+		Error struct {
+			Type            string `json:"type"`
+			ResetsAt        int64  `json:"resets_at"`
+			ResetsInSeconds int64  `json:"resets_in_seconds"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+		t.Fatal(err)
+	}
+	closeBody(resp)
+	ra, _ := strconv.Atoi(resp.Header.Get("Retry-After"))
+	if resp.StatusCode != http.StatusTooManyRequests || reply.Error.Type != "usage_limit_reached" ||
+		ra < 9000-5 || ra > 9000 || reply.Error.ResetsInSeconds != int64(ra) || reply.Error.ResetsAt < time.Now().Unix()+8990 {
+		t.Fatalf("quota: %d Retry-After %q %+v", resp.StatusCode, resp.Header.Get("Retry-After"), reply)
+	}
+
+	status, out := e.chat(map[string]any{"model": "mock-1", "messages": []any{user("y")}})
+	if status != http.StatusTooManyRequests || prompts.Load() != 1 {
+		t.Fatalf("a request before the reset must fail without reaching the runtime: %d %v (prompts %d)", status, out, prompts.Load())
+	}
+
+	resp = e.do(http.MethodGet, "/v1/quota", key, nil)
+	var q struct {
+		Limited bool `json:"limited"`
+		Groups  []struct {
+			Name    string `json:"name"`
+			Buckets []struct {
+				Name             string `json:"name"`
+				RemainingPercent int    `json:"remaining_percent"`
+				ResetsAt         int64  `json:"resets_at"`
+			} `json:"buckets"`
+		} `json:"groups"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&q); err != nil {
+		t.Fatal(err)
+	}
+	closeBody(resp)
+	if resp.StatusCode != http.StatusOK || q.Limited || len(q.Groups) != 1 || q.Groups[0].Name != "Gemini Models" ||
+		len(q.Groups[0].Buckets) != 1 || q.Groups[0].Buckets[0].RemainingPercent != 40 ||
+		q.Groups[0].Buckets[0].ResetsAt != time.Date(2026, 10, 2, 8, 22, 0, 0, time.UTC).Unix() {
+		t.Fatalf("quota report: %d %+v", resp.StatusCode, q)
+	}
+	e.chat(map[string]any{"model": "mock-1", "messages": []any{user("z")}})
+	if prompts.Load() != 2 {
+		t.Fatalf("a report with limits left must lift the block (prompts %d)", prompts.Load())
+	}
+	eventually(t, 5*time.Second, "sessions closed", func() bool { return e.app.Sessions.Len() == 0 })
 }

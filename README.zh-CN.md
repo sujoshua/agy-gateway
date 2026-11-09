@@ -241,6 +241,7 @@ docker build -t agy-gateway .
 | `finish_reason` | `stop`、`tool_calls`、`length` 和 `content_filter`。 |
 | `response_format` | `text`，以及尽力而为的 `json_object`，见下文。 |
 | `user` | 在同一个 API key 内进一步隔离会话。 |
+| `GET /v1/quota` | gateway 扩展：账号配额，见[配额](#配额)。 |
 | `/v1/responses` | 未实现，返回 404 并附说明。 |
 
 system 和 developer 消息会追加到 runtime 自带的系统提示词之后，不会替换它。
@@ -269,12 +270,43 @@ runtime 没有结构化输出的设置，所以 `json_object` 不是由模型强
 | 401 | 缺少 API key 或 key 错误。 |
 | 404 | 未知的模型或路由。 |
 | 409 | 该对话正在处理另一个请求；在 `/login/*` 上表示已登录或尚未发起登录。 |
-| 429 | runtime 配额用尽，或所有会话槽位都在忙。 |
+| 429 | 账号配额用尽（见[配额](#配额)）、runtime 报告了限流，或所有会话槽位都在忙。 |
 | 502 | runtime 返回了错误。 |
 | 503 | runtime 未就绪，例如正在启动、重启或未登录。 |
 | 504 | 超过 `AGY_GW_REQUEST_TIMEOUT`。 |
 
 流式输出开始后如果出错，会以最后一个 `data: {"error":…}` 事件发出，并且不发送 `[DONE]`，客户端由此可以判断流被截断了。
+
+### 配额
+
+账号配额用尽时，runtime 不会让这一轮失败，而是回复一条 "Usage Limit Reached" 消息。gateway 会识别这条消息，返回 429，而不是把它当作回复内容转发：
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 9000
+
+{"error":{"message":"the account's usage limit is reached; it resets at 2026-11-09T14:30:00Z",
+  "type":"usage_limit_reached","code":"usage_limit_reached","param":null,
+  "resets_at":1794234600,"resets_in_seconds":9000}}
+```
+
+- `Retry-After` 和 `resets_in_seconds` 是距离重置的秒数，`resets_at` 是 Unix 时间。runtime 没有说明重置时间时，三者都不返回。
+- runtime 只保留时长的两个最大单位并向下取整，例如 "4 days, 23 hours"，所以实际重置最多可能晚一个单位。在那之后到达的请求会得到一个新的、更精确的 429。
+- 在重置之前，聊天请求会直接得到同样的 429，不会到达 runtime。
+
+`GET /v1/quota`（需要 API key）通过 runtime 的 `/usage` 命令查询配额，不会调用模型。结果缓存 30 秒：
+
+```json
+{"object":"quota","limited":false,
+ "groups":[{"name":"Gemini Models","buckets":[{"name":"Weekly Limit Remaining",
+   "remaining_percent":91,"resets_at":1790929320,"status":"91% remaining (resets Oct 02, 2026, 08:22 UTC)"}]}],
+ "text":"### Session Usage\n…"}
+```
+
+- 顶层的 `limited` 和 `resets_at` 表示聊天请求当前是否被拒绝，以及拒绝到什么时候。
+- 每个 bucket 带 `remaining_percent` 或 `remaining_units`（取决于 runtime 给出哪一个），不适用的限额带 `disabled`。重置时间精确到分钟。
+- runtime 无法获取配额时返回 `error`，没有报告任何限额时返回 `note`。`text` 是 runtime 的原始报告。
+- 如果报告中没有任何 bucket 用尽，会提前解除拒绝。
 
 ## 在 OpenAI 客户端中使用
 

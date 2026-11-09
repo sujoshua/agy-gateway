@@ -16,6 +16,7 @@ const (
 	evText eventKind = iota
 	evThought
 	evToolCall
+	evQuota // the runtime's report of an exhausted quota
 	evDone
 )
 
@@ -134,7 +135,11 @@ func (s *Session) onUpdate(n sdk.SessionNotification) {
 	switch {
 	case u.AgentMessageChunk != nil:
 		if t := u.AgentMessageChunk.Content.Text; t != nil && t.Text != "" {
-			s.q.push(event{kind: evText, text: t.Text})
+			kind := evText
+			if isQuotaMessage(t.Text) {
+				kind = evQuota
+			}
+			s.q.push(event{kind: kind, text: t.Text})
 		}
 	case u.AgentThoughtChunk != nil:
 		if t := u.AgentThoughtChunk.Content.Text; t != nil && t.Text != "" {

@@ -47,6 +47,11 @@ type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*Session // by ACP session id
 	calls    map[string]*Session // by issued tool call id
+	limited  time.Time           // requests get a 429 until then
+
+	quotaMu sync.Mutex
+	quota   *Quota // last report, guarded by quotaMu
+	quotaAt time.Time
 }
 
 // NewManager creates a Manager. Route runtime updates to Dispatch and
@@ -233,6 +238,9 @@ func (m *Manager) close(s *Session, reason string) {
 func (m *Manager) Handle(ctx context.Context, rq *Request, em Emitter) (*Outcome, *Partial) {
 	if _, err := m.opt.Runtime.Conn(); err != nil {
 		return nil, &Partial{Err: openai.Unavailable("%v", err)}
+	}
+	if at := m.Limited(); !at.IsZero() {
+		return nil, &Partial{Err: openai.UsageLimit(at, time.Now())}
 	}
 	fps := fingerprints(rq.Messages)
 	s, start, oerr := m.acquire(rq, fps)
@@ -511,6 +519,7 @@ func (m *Manager) serve(ctx context.Context, s *Session, rq *Request, start int,
 func (m *Manager) consume(ctx context.Context, s *Session, rq *Request, em Emitter) (*Outcome, *Partial) {
 	out := &Outcome{}
 	sent := false
+	quota := ""
 	fail := func(err *openai.Error) (*Outcome, *Partial) { return nil, &Partial{Err: err, Sent: sent} }
 	var batch <-chan time.Time
 	for {
@@ -559,9 +568,18 @@ func (m *Manager) consume(ctx context.Context, s *Session, rq *Request, em Emitt
 			if batch == nil {
 				batch = time.After(m.opt.BatchWindow)
 			}
+		case evQuota:
+			quota = ev.text
 		case evDone:
 			if ev.err != nil {
 				return fail(upstreamError(ev.err))
+			}
+			if quota != "" {
+				now := time.Now()
+				at := quotaReset(quota, now)
+				m.limitUntil(at)
+				m.log.Warn("the account quota is exhausted", logSession(s.id), slog.Time("resets_at", at))
+				return fail(openai.UsageLimit(at, now))
 			}
 			out.FinishReason = finishReason(ev.stop)
 			if len(out.ToolCalls) > 0 {
