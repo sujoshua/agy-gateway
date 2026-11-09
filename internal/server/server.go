@@ -157,6 +157,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request, owner string) {
 	rq := &session.Request{
 		Owner: owner, Model: model, Messages: req.Messages, Tools: tools, EmitThinks: s.opt.EmitReasoning,
 		SingleToolCall: req.ParallelToolCalls != nil && !*req.ParallelToolCalls,
+		JSONObject:     req.JSONObject(),
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.opt.RequestTimeout)

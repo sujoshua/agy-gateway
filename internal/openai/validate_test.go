@@ -24,6 +24,7 @@ func TestValidateAccepts(t *testing.T) {
 			{"role":"tool","tool_call_id":"c1","content":"sunny"}]}`,
 		`{"model":"m","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}`,
 		`{"model":"m","messages":[{"role":"user","content":"hi"}],"n":1,"response_format":{"type":"text"},"reasoning_effort":"low","user":"u","metadata":{"a":"b"}}`,
+		`{"model":"m","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`,
 	} {
 		if _, err := Validate(decode(t, s), false); err != nil {
 			t.Errorf("%s: unexpected error %v", s, err)
@@ -38,7 +39,7 @@ func TestValidateRejects(t *testing.T) {
 		"temperature":     `{"model":"m","temperature":0.2,"messages":[{"role":"user","content":"hi"}]}`,
 		"max_tokens":      `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`,
 		"n":               `{"model":"m","n":2,"messages":[{"role":"user","content":"hi"}]}`,
-		"json mode":       `{"model":"m","response_format":{"type":"json_object"},"messages":[{"role":"user","content":"hi"}]}`,
+		"json schema":     `{"model":"m","response_format":{"type":"json_schema","json_schema":{"name":"x"}},"messages":[{"role":"user","content":"hi"}]}`,
 		"required":        `{"model":"m","tool_choice":"required","messages":[{"role":"user","content":"hi"}]}`,
 		"named":           `{"model":"m","tool_choice":{"type":"function","function":{"name":"x"}},"messages":[{"role":"user","content":"hi"}]}`,
 		"orphan result":   `{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"tool","tool_call_id":"x","content":"r"}]}`,

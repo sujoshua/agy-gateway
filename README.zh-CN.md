@@ -239,10 +239,13 @@ docker build -t agy-gateway .
 | `usage` | runtime 报告的真实数值，包括缓存和推理 token。runtime 没有报告时省略该字段，不会编造。 |
 | `reasoning_effort` | `low`/`medium`/`high` 选择对应的思考档位。 |
 | `finish_reason` | `stop`、`tool_calls`、`length` 和 `content_filter`。 |
+| `response_format` | `text`，以及尽力而为的 `json_object`，见下文。 |
 | `user` | 在同一个 API key 内进一步隔离会话。 |
 | `/v1/responses` | 未实现，返回 404 并附说明。 |
 
 system 和 developer 消息会追加到 runtime 自带的系统提示词之后，不会替换它。
+
+runtime 没有结构化输出的设置，所以 `json_object` 不是由模型强制保证的。gateway 会在提示中要求模型只回复一个 JSON 对象，并在发送前检查最终回答：去掉包在对象外面的 Markdown 代码块；如果仍然不是 JSON 对象，就让模型再回答一次；第二次还不是，就返回 502。因此流式客户端会在最后一次性收到回答文本，推理内容仍然实时流式输出。被截断（`length`）的回答，以及以工具调用结束的响应中的文本，不做检查，原样返回。
 
 使用以下任一功能的请求会返回 400，错误信息中会指明字段：
 
@@ -253,7 +256,7 @@ system 和 developer 消息会追加到 runtime 自带的系统提示词之后�
 - assistant 预填充。
 - 旧版 `functions` 字段。
 - `logprobs`。
-- 非 text 的 `response_format`。
+- `json_schema` 类型的 `response_format`。
 - 采样参数：`temperature`、`top_p`、各种 penalty、`seed`、`stop`、`max_tokens`、`max_completion_tokens`。设置 `AGY_GW_IGNORE_UNSUPPORTED_PARAMS=true` 可以改为接受并忽略。
 
 ### 错误

@@ -71,6 +71,9 @@ type Request struct {
 	// SingleToolCall answers with at most one tool call
 	// (parallel_tool_calls: false); later calls wait for the next request.
 	SingleToolCall bool
+	// JSONObject asks for a final answer that is one JSON object
+	// (response_format json_object).
+	JSONObject bool
 }
 
 // Emitter receives response output as it is produced.
@@ -253,7 +256,19 @@ func (m *Manager) Handle(ctx context.Context, rq *Request, em Emitter) (*Outcome
 		start = trailingStart(rq.Messages)
 	}
 
+	var j *jsonEmitter
+	if rq.JSONObject {
+		j = &jsonEmitter{next: em}
+		em = j
+	}
 	out, p := m.serve(ctx, s, rq, start, fresh, em)
+	if j != nil {
+		if p == nil {
+			out, p = m.finishJSON(ctx, s, rq, j, out)
+		} else {
+			p.Sent = j.sent
+		}
+	}
 	if p != nil {
 		m.release(s, nil)
 		if !p.keep {
@@ -483,6 +498,9 @@ func (m *Manager) serve(ctx context.Context, s *Session, rq *Request, start int,
 	blocks = append(blocks, promptBlocks(input, names)...)
 	if len(blocks) == 0 {
 		return nil, &Partial{Err: openai.InvalidRequest("messages", "the request contains no new input for the model"), keep: true}
+	}
+	if rq.JSONObject {
+		blocks = append(blocks, sdk.TextBlock(jsonInstruction))
 	}
 	s.markAnswered(input)
 	s.startTurn(m.ctx, blocks)

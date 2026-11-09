@@ -45,12 +45,18 @@ type ChatRequest struct {
 	FunctionCall        json.RawMessage `json:"function_call,omitempty"`
 }
 
+// JSONObject reports whether the request asks for a JSON object reply.
+func (r *ChatRequest) JSONObject() bool {
+	return r.ResponseFormat != nil && r.ResponseFormat.Type == "json_object"
+}
+
 // StreamOptions mirrors stream_options.
 type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
-// ResponseFormat mirrors response_format; only "text" is supported.
+// ResponseFormat mirrors response_format; "text" and "json_object" are
+// supported.
 type ResponseFormat struct {
 	Type string `json:"type"`
 }

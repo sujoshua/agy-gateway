@@ -63,8 +63,8 @@ func validateUnsupported(r *ChatRequest, ignoreSampling bool) *Error {
 	if len(r.LogitBias) > 0 {
 		return Unsupported("logit_bias", "logit_bias is not supported")
 	}
-	if r.ResponseFormat != nil && r.ResponseFormat.Type != "text" {
-		return Unsupported("response_format", "response_format %q is not supported; only text output is available", r.ResponseFormat.Type)
+	if r.ResponseFormat != nil && r.ResponseFormat.Type != "text" && r.ResponseFormat.Type != "json_object" {
+		return Unsupported("response_format", "response_format %q is not supported; use text or json_object", r.ResponseFormat.Type)
 	}
 	for _, m := range r.Modalities {
 		if m != "text" {

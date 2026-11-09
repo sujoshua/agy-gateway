@@ -353,11 +353,21 @@ them all with their defaults.
 | `usage` | Real runtime counts, including cached and reasoning tokens. If the runtime reports none, the field is omitted rather than invented. |
 | `reasoning_effort` | `low`/`medium`/`high` selects the matching thinking variant. |
 | `finish_reason` | `stop`, `tool_calls`, `length`, and `content_filter`. |
+| `response_format` | `text`, and `json_object` as best effort; see below. |
 | `user` | Further isolates sessions within one API key. |
 | `/v1/responses` | Not implemented. Returns 404 with an explanation. |
 
 System and developer messages are appended to the runtime's own built-in
 system prompt; they do not replace it.
+
+The runtime has no structured-output setting, so `json_object` is not
+enforced by the model. The gateway adds an instruction to reply with one
+JSON object and checks the final answer before sending it. It removes a
+Markdown code fence around the object, asks the model once more if the reply
+is still not a JSON object, and returns 502 if the second reply is not one
+either. Streaming clients therefore receive the answer text in one piece at
+the end; reasoning still streams. Answers cut short (`length`) are passed on
+unchecked, and so is text in a response that ends with tool calls.
 
 Requests that use any of the following are rejected with 400 and a message
 naming the field:
@@ -369,7 +379,7 @@ naming the field:
 - Assistant prefill.
 - The legacy `functions` field.
 - `logprobs`.
-- `response_format` other than text.
+- `response_format` `json_schema`.
 - Sampling parameters: `temperature`, `top_p`, penalties, `seed`, `stop`,
   `max_tokens`, `max_completion_tokens`. Set
   `AGY_GW_IGNORE_UNSUPPORTED_PARAMS=true` to accept and ignore these instead.

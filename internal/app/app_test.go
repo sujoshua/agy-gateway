@@ -396,7 +396,7 @@ func TestInvalidRequests(t *testing.T) {
 		{"n=2", map[string]any{"model": "mock-1", "n": 2, "messages": []any{user("hi")}}, 400},
 		{"logprobs", map[string]any{"model": "mock-1", "logprobs": true, "messages": []any{user("hi")}}, 400},
 		{"temperature", map[string]any{"model": "mock-1", "temperature": 0.2, "messages": []any{user("hi")}}, 400},
-		{"json mode", map[string]any{"model": "mock-1", "response_format": map[string]any{"type": "json_object"}, "messages": []any{user("hi")}}, 400},
+		{"json schema", map[string]any{"model": "mock-1", "response_format": map[string]any{"type": "json_schema"}, "messages": []any{user("hi")}}, 400},
 		{"bad role", map[string]any{"model": "mock-1", "messages": []any{map[string]any{"role": "robot", "content": "x"}}}, 400},
 		{"stream_options without stream", map[string]any{"model": "mock-1", "stream_options": map[string]any{"include_usage": true}, "messages": []any{user("hi")}}, 400},
 		{"orphan tool result", map[string]any{"model": "mock-1", "messages": []any{user("hi"), toolResult("call_x", "1")}}, 400},
@@ -881,6 +881,58 @@ func TestStopReasons(t *testing.T) {
 		if finish(t, resp) != want {
 			t.Fatalf("%s: finish %q, want %q", in, finish(t, resp), want)
 		}
+	}
+}
+
+// TestJSONObject covers response_format json_object: the instruction is
+// added to the prompt, a code fence is removed, an invalid reply is asked
+// for once more, and a second invalid reply fails the request.
+func TestJSONObject(t *testing.T) {
+	e := newEnv(t, nil)
+	e.agent.OnPrompt(func(t *acptest.Turn) (sdk.StopReason, error) {
+		first := promptText(t.Session.Prompts[0])
+		switch {
+		case !strings.Contains(first, "JSON object"):
+			return sdk.StopReasonEndTurn, t.Say("the instruction is missing")
+		case strings.Contains(first, "fenced"):
+			return sdk.StopReasonEndTurn, t.Say("```json\n{\"a\": 1}\n```")
+		case strings.Contains(first, "never"):
+			return sdk.StopReasonEndTurn, t.Say("no JSON here")
+		case strings.Contains(t.Text(), "not a single valid JSON object"):
+			return sdk.StopReasonEndTurn, t.Say(`{"b": 2}`)
+		default:
+			return sdk.StopReasonEndTurn, t.Say("[1, 2]")
+		}
+	})
+	jsonReq := func(text string) map[string]any {
+		return map[string]any{"model": "mock-1", "response_format": map[string]any{"type": "json_object"}, "messages": []any{user(text)}}
+	}
+
+	status, resp := e.chat(jsonReq("fenced"))
+	if status != 200 || message(t, resp)["content"] != `{"a": 1}` {
+		t.Fatalf("fenced: %d %v", status, resp)
+	}
+	s := e.stream(jsonReq("fenced"))
+	if content, _, finish, _ := s.assemble(t); content != `{"a": 1}` || finish != "stop" || !s.done {
+		t.Fatalf("fenced stream: %q %q %+v", content, finish, s)
+	}
+
+	status, resp = e.chat(jsonReq("array"))
+	if status != 200 || message(t, resp)["content"] != `{"b": 2}` {
+		t.Fatalf("retry: %d %v", status, resp)
+	}
+	usage := as[map[string]any](t, resp["usage"])
+	if usage["prompt_tokens"] != float64(200) {
+		t.Fatalf("usage must cover both turns: %v", usage)
+	}
+
+	status, resp = e.chat(jsonReq("never"))
+	if status != http.StatusBadGateway {
+		t.Fatalf("never: %d %v", status, resp)
+	}
+	s = e.stream(jsonReq("never"))
+	if s.status != http.StatusBadGateway || len(s.chunks) != 0 {
+		t.Fatalf("an invalid reply must not reach a streaming client: %+v", s)
 	}
 }
 
