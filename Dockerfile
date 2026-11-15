@@ -11,7 +11,7 @@
 
 # The build stage runs on the build host and cross-compiles, so multi-arch
 # builds do not compile Go under emulation.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
